@@ -11,6 +11,7 @@ class Player {
     public static void main(String args[]) {
         Scanner in = new Scanner(System.in);
         int playerCount = 2;
+        int playerId = 0;
         int upperProductCount = 3;
         int currentProductCount = 0;
         boolean isLastSpurt = false;
@@ -61,13 +62,12 @@ class Player {
                 int score = in.nextInt(); // amount of rupees
                 users[i] = new User(inv0, inv1, inv2, inv3, score);
             }
-            users[0].setSpells(mySpells);
+            users[playerId].setSpells(mySpells);
             users[1].setSpells(opponentSpells);
 
             //自分が作る場合の優先順位を設定
             for (Product product : products) {
-                product.setStepToCreate(users[0]);
-                product.setStaticStepToCreate();
+                product.setStepToCreate(users[playerId]);
                 product.setPriority(isLastSpurt, users[0], users[1]);
             }
 
@@ -75,10 +75,10 @@ class Player {
 
             //作りたいものとプレイヤーの行動をセット
             Command command = null;
-            for(Product product: products) {
-                users[0].setTargetProduct(product);
-                try{
-                    command = users[0].getCommandToDo();
+            for (Product product : products) {
+                users[playerId].setTargetProduct(product);
+                try {
+                    command = users[playerId].getCommandToDo();
                     break;
                 } catch (NothingCanDoException e) {
                     //何もできず詰んだ場合は作るプロダクトを変える
@@ -86,17 +86,17 @@ class Player {
                 }
             }
             //どうしようもなくなったらずっと休む
-            if(command == null) {
+            if (command == null) {
                 command = new Rest();
             }
 
             //BREWする場合それを保持(ループで消えてしまうにも拘わらず入力データに無いための処置。相手の個数はわからない)
-            if(command instanceof Brew) {
+            if (command instanceof Brew) {
                 currentProductCount++;
                 isLastSpurt = (upperProductCount - currentProductCount) == 1;
             }
 
-            System.err.println(users[0].targetProduct);
+            System.err.println(users[playerId].targetProduct);
             System.err.println(command.getClass());
 
             // in the first league: BREW <id> | WAIT; later: BREW <id> | CAST <id> [<times>] | LEARN <id> | REST | WAIT
@@ -134,8 +134,8 @@ class Product implements Comparable<Product> {
 
     public void setPriority(boolean isLastSpurt, User me, User opponent) {
         //終盤は挙動を変える
-        if(isLastSpurt) {
-            if(opponent.score <= me.score + this.price) {
+        if (isLastSpurt) {
+            if (opponent.score <= me.score + this.price) {
                 this.priority = this.step; //すぐ作れるものを最優先
             } else {
                 this.priority = Integer.MAX_VALUE;  //作っても負けるものは作らない
@@ -190,6 +190,25 @@ class Product implements Comparable<Product> {
      * @param user
      */
     public void setStepToCreate(User user) {
+        WayToMake way = this.getCreateWay(user);
+        this.spellCounts = way.spellCounts;
+        this.restCount = way.restCount;
+        this.step = restCount + Arrays.stream(way.spellCounts).sum();
+
+        //初めから作るとした場合のコストの算出
+        User initialUser = new User(0, 0, 0, 0, 0);
+        initialUser.setSpells(user.spells);
+        WayToMake staticWay = this.getCreateWay(initialUser);
+        this.staticStep = staticWay.restCount + Arrays.stream(staticWay.spellCounts).sum();
+    }
+
+    /**
+     * 作るために必要な各作業のamount。
+     * 各Spellが何から何を生むかを予め知っている。
+     * @param user
+     * @return
+     */
+    public WayToMake getCreateWay(User user) {
         int[] spellCounts = {0, 0, 0, 0};
         int[] restCounts = {0, 0, 0, 0};
         int[] requires = {
@@ -248,82 +267,23 @@ class Product implements Comparable<Product> {
         }
 
         int restCount = Math.max(Math.max(restCounts[0], restCounts[1]), Math.max(restCounts[2], restCounts[3]));
-        int result = restCount + Arrays.stream(spellCounts).sum();
+        return new WayToMake(spellCounts, restCount);
+    }
+}
 
+class WayToMake {
+    int spellCounts[];
+    int restCount;
+
+    public WayToMake(int[] spellCounts, int restCount) {
         this.spellCounts = spellCounts;
         this.restCount = restCount;
-        this.step = result;
-    }
-
-    /**
-     * プロダクトを0から作るための必要手数の設定
-     */
-    public void setStaticStepToCreate() {
-        int[] spellCounts = {0, 0, 0, 0};
-        int[] restCounts = {0, 0, 0, 0};
-        int[] requires = {
-                this.delta0,
-                this.delta1,
-                this.delta2,
-                this.delta3,
-        };
-        boolean[] spellCastable = {
-                true,
-                true,
-                true,
-                true,
-        };
-
-        while (spellCounts[3] < Math.max(0, requires[3])) {
-            if (!spellCastable[3]) {
-                restCounts[3] += 1;
-                spellCastable[3] = true;
-            }
-            spellCounts[3] += 1;
-            requires[2] += 1;
-            requires[1] += 1;
-            requires[0] += 1;
-            spellCastable[3] = false;
-        }
-
-        while (spellCounts[2] < requires[2]) {
-            if (!spellCastable[2]) {
-                restCounts[2] += 1;
-                spellCastable[2] = true;
-            }
-            spellCounts[2] += 1;
-            requires[1] += 1;
-            requires[0] += 1;
-            spellCastable[2] = false;
-        }
-
-        while (spellCounts[1] < requires[1]) {
-            if (!spellCastable[1]) {
-                restCounts[1] += 1;
-                spellCastable[1] = true;
-            }
-            spellCounts[1] += 1;
-            requires[0] += 1;
-            spellCastable[1] = false;
-        }
-
-        while ((spellCounts[0] * 2) < requires[0]) {
-            if (!spellCastable[0]) {
-                restCounts[0] += 1;
-                spellCastable[0] = true;
-            }
-            spellCounts[0] += 1;
-            spellCastable[0] = false;
-        }
-
-        int restCount = Math.max(Math.max(restCounts[0], restCounts[1]), Math.max(restCounts[2], restCounts[3]));
-
-        this.staticStep = restCount + Arrays.stream(spellCounts).sum();
     }
 }
 
 class User implements Cloneable {
-    int productCount=0;
+    int productCount = 0;
+    int itemLimit = 10;
     int score;
     int delta0;
     int delta1;
@@ -348,8 +308,7 @@ class User implements Cloneable {
         this.targetProduct = product;
     }
 
-    public void addProductCount()
-    {
+    public void addProductCount() {
         this.productCount++;
     }
 
@@ -380,7 +339,7 @@ class User implements Cloneable {
             return this.spells.get(0);
         }
 
-        if(this.spells.stream().allMatch(spell -> spell.castable)) {
+        if (this.spells.stream().allMatch(spell -> spell.castable)) {
             throw new NothingCanDoException();
         }
         System.err.println("REST");
@@ -397,9 +356,8 @@ class User implements Cloneable {
                 && (-spell.delta3 <= this.delta3);
     }
 
-    private boolean willPossessionOverflow(int willGenerate)
-    {
-        return (this.delta0 + this.delta1 + this.delta2 + this.delta3 + willGenerate > 10);
+    private boolean willPossessionOverflow(int willGenerate) {
+        return (this.delta0 + this.delta1 + this.delta2 + this.delta3 + willGenerate > itemLimit);
     }
 }
 
@@ -444,6 +402,7 @@ class Rest extends Command {
 abstract class Command {
     int actionId;
     String actionType;
+
     abstract public String getCommandString();
 }
 
