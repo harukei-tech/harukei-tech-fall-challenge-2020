@@ -38,15 +38,16 @@ class Player {
                 int taxCount = in.nextInt(); // in the first two leagues: always 0; later: the amount of taxed tier-0 ingredients you gain from learning this spell; For brews, this is how many times you can still gain an urgency bonus
                 boolean castable = in.nextInt() != 0; // in the first league: always 0; later: 1 if this is a castable player spell
                 boolean repeatable = in.nextInt() != 0; // for the first two leagues: always 0; later: 1 if this is a repeatable player spell
+                int[] ingredients = new int[]{delta0, delta1, delta2, delta3};
                 switch (actionType) {
                     case "CAST":
-                        mySpells.add(new Spell(actionId, delta0, delta1, delta2, delta3, castable));
+                        mySpells.add(new Spell(actionId, ingredients, castable));
                         break;
                     case "OPPONENT_CAST":
-                        opponentSpells.add(new Spell(actionId, delta0, delta1, delta2, delta3, castable));
+                        opponentSpells.add(new Spell(actionId, ingredients, castable));
                         break;
                     case "BREW":
-                        products.add(new Product(actionId, actionType, delta0, delta1, delta2, delta3, price, tomeIndex, taxCount, castable, repeatable));
+                        products.add(new Product(actionId, actionType, ingredients, price, tomeIndex, taxCount, castable, repeatable));
                         break;
                     default:
                         break;
@@ -60,7 +61,7 @@ class Player {
                 int inv2 = in.nextInt();
                 int inv3 = in.nextInt();
                 int score = in.nextInt(); // amount of rupees
-                users[i] = new User(inv0, inv1, inv2, inv3, score);
+                users[i] = new User(new int[]{inv0, inv1, inv2, inv3}, score);
             }
             users[playerId].setSpells(mySpells);
             users[1].setSpells(opponentSpells);
@@ -110,10 +111,7 @@ class Product implements Comparable<Product> {
     int price;
     int actionId;
     String actionType;
-    int delta0; //消費数。(元データはマイナスなので、プラスに変換して保持している)
-    int delta1;
-    int delta2;
-    int delta3;
+    int[] ingredients;//消費数。(元データはマイナスなので、プラスに変換して保持している)
     double costPerformance;    //高いほど有益
     double priority;
 
@@ -122,20 +120,17 @@ class Product implements Comparable<Product> {
     int[] spellCounts;       //必要なキャスト回数
     int restCount;        //必要な休憩回数
 
-    public Product(int actionId, String actionType, int delta0, int delta1, int delta2, int delta3, int price, int tomeIndex, int taxCount, boolean castable, boolean repeatable) {
+    public Product(int actionId, String actionType, int[] ingredients, int price, int tomeIndex, int taxCount, boolean castable, boolean repeatable) {
         this.actionId = actionId;
         this.actionType = actionType;
-        this.delta0 = -delta0;
-        this.delta1 = -delta1;
-        this.delta2 = -delta2;
-        this.delta3 = -delta3;
+        this.ingredients = Arrays.stream(ingredients).map(v -> -v).toArray();
         this.price = price;
     }
 
     public void setPriority(boolean isLastSpurt, User me, User opponent) {
         //終盤は挙動を変える
         if (isLastSpurt) {
-            if (opponent.score <= me.score + this.price) {
+            if ((opponent.score + opponent.extraScore) <= (me.score + this.price)) {
                 this.priority = this.step; //すぐ作れるものを最優先
             } else {
                 this.priority = Integer.MAX_VALUE;  //作っても負けるものは作らない
@@ -149,10 +144,13 @@ class Product implements Comparable<Product> {
     }
 
     public boolean isCreatable(User user) {
-        return (this.delta0 <= user.delta0)
-                && (this.delta1 <= user.delta1)
-                && (this.delta2 <= user.delta2)
-                && (this.delta3 <= user.delta3);
+        //1つでもアイテムが足りないならfalse
+        for (int i = 0; i < user.ingredients.length; i++) {
+            if (user.ingredients[i] < this.ingredients[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -172,14 +170,10 @@ class Product implements Comparable<Product> {
         }
 
         //高価なものをたくさん使うものは低評価
-        if (this.delta3 < o.delta3) {
-            return 1;
-        } else if (this.delta2 < o.delta2) {
-            return 1;
-        } else if (this.delta1 < o.delta1) {
-            return 1;
-        } else if (this.delta0 < o.delta0) {
-            return 1;
+        for (int i = 3; i >= 0; i--) {
+            if (this.ingredients[i] < o.ingredients[i]) {
+                return 1;
+            }
         }
         return 0;
     }
@@ -196,7 +190,7 @@ class Product implements Comparable<Product> {
         this.step = restCount + Arrays.stream(way.spellCounts).sum();
 
         //初めから作るとした場合のコストの算出
-        User initialUser = new User(0, 0, 0, 0, 0);
+        User initialUser = new User(new int[]{0, 0, 0, 0}, 0);
         initialUser.setSpells(user.spells);
         WayToMake staticWay = this.getCreateWay(initialUser);
         this.staticStep = staticWay.restCount + Arrays.stream(staticWay.spellCounts).sum();
@@ -205,24 +199,20 @@ class Product implements Comparable<Product> {
     /**
      * 作るために必要な各作業のamount。
      * 各Spellが何から何を生むかを予め知っている。
+     *
      * @param user
      * @return
      */
     public WayToMake getCreateWay(User user) {
         int[] spellCounts = {0, 0, 0, 0};
         int[] restCounts = {0, 0, 0, 0};
-        int[] requires = {
-                this.delta0 - user.delta0,
-                this.delta1 - user.delta1,
-                this.delta2 - user.delta2,
-                this.delta3 - user.delta3,
-        };
-        boolean[] spellCastable = {
-                user.spells.get(0).castable,
-                user.spells.get(1).castable,
-                user.spells.get(2).castable,
-                user.spells.get(3).castable,
-        };
+        int[] requires = new int[4];
+        Boolean[] spellCastable;
+
+        for (int i = 0; i < this.ingredients.length; i++) {
+            requires[i] = this.ingredients[i] - user.ingredients[i];
+        }
+        spellCastable = user.spells.stream().map(spell -> spell.castable).toArray(Boolean[]::new);
 
         while (spellCounts[3] < Math.max(0, requires[3])) {
             if (!spellCastable[3]) {
@@ -266,7 +256,7 @@ class Product implements Comparable<Product> {
             spellCastable[0] = false;
         }
 
-        int restCount = Math.max(Math.max(restCounts[0], restCounts[1]), Math.max(restCounts[2], restCounts[3]));
+        int restCount = Arrays.stream(restCounts).max().getAsInt();
         return new WayToMake(spellCounts, restCount);
     }
 }
@@ -285,19 +275,16 @@ class User implements Cloneable {
     int productCount = 0;
     int itemLimit = 10;
     int score;
-    int delta0;
-    int delta1;
-    int delta2;
-    int delta3;
+    int extraScore=0;
+    int[] ingredients;
     List<Spell> spells;
     Product targetProduct;
 
-    public User(int delta0, int delta1, int delta2, int delta3, int score) {
-        this.delta0 = delta0;
-        this.delta1 = delta1;
-        this.delta2 = delta2;
-        this.delta3 = delta3;
+    public User(int[] ingredients, int score) {
+        this.ingredients = new int[4];
+        this.ingredients = ingredients.clone();
         this.score = score;
+        this.extraScore = Arrays.stream(this.ingredients).sum() - this.ingredients[0];  //item0以外は得点として加算される
     }
 
     public void setSpells(List<Spell> spells) {
@@ -335,7 +322,7 @@ class User implements Cloneable {
         } else if (this.shouldDoSpell(this.targetProduct, 1)) {
             System.err.println(1);
             return this.spells.get(1);
-        } else if (this.shouldDoSpell(this.targetProduct, 0) && !this.willPossessionOverflow(2)) {
+        } else if (this.shouldDoSpell(this.targetProduct, 0) && !this.willBagOverflow(2)) {
             return this.spells.get(0);
         }
 
@@ -348,33 +335,36 @@ class User implements Cloneable {
 
     private boolean shouldDoSpell(Product p, int spellId) {
         Spell spell = this.spells.get(spellId);
+        boolean enoughIngredients = true;
+        for (int i = 0; i < 4; i++) {
+            //消費する分が足りているか、なのでspell結果のマイナス値
+            if (this.ingredients[i] < -spell.ingredients[i]) {
+                enoughIngredients = false;
+            }
+        }
+
+        boolean ingredientOverFlow = this.willBagOverflow(Arrays.stream(spell.ingredients).sum());
+
+
         return (0 < p.spellCounts[spellId]) //実行する必要がある
                 && (spell.castable) //実行可能
-                && (-spell.delta0 <= this.delta0)    //実行するだけの手持ちがある
-                && (-spell.delta1 <= this.delta1)
-                && (-spell.delta2 <= this.delta2)
-                && (-spell.delta3 <= this.delta3);
+                && enoughIngredients    //実行するだけの手持ちがある
+                && !ingredientOverFlow;
     }
 
-    private boolean willPossessionOverflow(int willGenerate) {
-        return (this.delta0 + this.delta1 + this.delta2 + this.delta3 + willGenerate > itemLimit);
+    private boolean willBagOverflow(int willGenerate) {
+        return (Arrays.stream(this.ingredients).sum() + willGenerate) > itemLimit;
     }
 }
 
 class Spell extends Command {
     int actionId;
-    int delta0;
-    int delta1;
-    int delta2;
-    int delta3;
+    int[] ingredients;
     boolean castable;
 
-    Spell(int actionId, int delta0, int delta1, int delta2, int delta3, boolean castable) {
+    Spell(int actionId, int[] ingredients, boolean castable) {
         this.actionId = actionId;
-        this.delta0 = delta0;
-        this.delta1 = delta1;
-        this.delta2 = delta2;
-        this.delta3 = delta3;
+        this.ingredients = ingredients.clone();
         this.castable = castable;
     }
 
