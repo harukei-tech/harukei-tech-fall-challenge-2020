@@ -40,7 +40,7 @@ class Player {
             //javaではオブジェクトの配列が作れないらしい
             ArrayList<Spell> mySpells = new ArrayList<>();
             ArrayList<Spell> opponentSpells = new ArrayList<>(); //相手は1人なので配列にしていない
-            List<Spell> tome = new ArrayList<>();   //先読みの有用性がわからないので作りこんでいない
+            List<TomeSpell> tome = new ArrayList<>();   //先読みの有用性がわからないので作りこんでいない
 
             for (int i = 0; i < actionCount; i++) {
                 int actionId = in.nextInt(); // the unique ID of this spell or recipe
@@ -68,7 +68,7 @@ class Player {
                         products.add(p);
                         break;
                     case "LEARN":
-                        tome.add(new Spell(actionId, ingredients, castable, repeatable));
+                        tome.add(new TomeSpell(actionId, ingredients, tomeIndex, taxCount, castable, repeatable));
                         break;
                     default:
                         break;
@@ -117,7 +117,7 @@ class Player {
             Logger.logln(me.strategy);
 
             //自分が作る場合の手順を作成
-            if(me.strategy != Strategy.Start) {
+            if (me.strategy != Strategy.Start) {
                 User simulationUser = new User(me.ingredients.clone(), 0);
                 simulationUser.setSpells(ListFactory.createSpellListCopy(me.spells));
                 CreationMap myCreationMap = new CreationMap();
@@ -201,26 +201,14 @@ class CreationMap {
         this.map.put(CreationMap.toKey(smuser.ingredients), smuser);
         this.queue.add(smuser);
         Logger.logln("walk start");
-        int count = 0;
-        int previousStep = 0;
         long startTime = System.currentTimeMillis();
         while (!this.queue.isEmpty()) {
-            count++;
-            if (count % 200 == 0) {
-                Logger.logln("count" + count);
-            }
-            if(System.currentTimeMillis() - startTime > 40) {
+            if (System.currentTimeMillis() - startTime > 40) {
                 Logger.logln("walk break");
                 break;
             }
             SimulationUser u = this.queue.poll();
-//            if(previousStep < u.step) {
-//                Logger.logln(previousStep);
-//                Logger.logln(u.step);
-//                Logger.logln(this.queue.size());
-//            }
             this.walk(u);
-//            previousStep = u.step;
         }
         Logger.logln("walk end");
 
@@ -301,12 +289,12 @@ class CreationMap {
     private void fillUnders(int firstIngredients, int secondIngredients, int thirdIngredients, int forthIngredients, SimulationUser maxSmuser) {
         for (int i = firstIngredients; 0 <= i; i--) {
             for (int j = secondIngredients; 0 <= j; j--) {
+                if (TimeKeeper.isTimeOver()) {
+                    Logger.logln("fillUnders ended forthly");
+                    return;
+                }
                 for (int k = thirdIngredients; 0 <= k; k--) {
                     for (int l = forthIngredients; 0 <= l; l--) {
-                        if (TimeKeeper.isTimeOver()) {
-                            Logger.logln("fillUnders ended forthly");
-                            return;
-                        }
                         if (i == firstIngredients && j == secondIngredients && k == thirdIngredients && l == forthIngredients) {
                             continue;
                         }
@@ -331,8 +319,7 @@ class CreationMap {
      * @return
      */
     public static String toKey(int[] ingredients) {
-        return Integer.toString(ingredients[0] + ingredients[1]*100 + ingredients[2]*10000 + ingredients[3] * 1000000);
-//        return Arrays.stream(ingredients).mapToObj(String::valueOf).collect(Collectors.joining("-")); //激重
+        return Integer.toString(ingredients[0] + ingredients[1] * 100 + ingredients[2] * 10000 + ingredients[3] * 1000000);
     }
 }
 
@@ -350,7 +337,7 @@ class Product implements Comparable<Product> {
     public Product(int actionId, String actionType, int[] ingredients, int price, int tomeIndex, int taxCount, boolean castable, boolean repeatable) {
         this.actionId = actionId;
         this.actionType = actionType;
-        this.ingredients = Arrays.stream(ingredients).map(v->-v).toArray();
+        this.ingredients = Arrays.stream(ingredients).map(v -> -v).toArray();
         this.price = price;
     }
 
@@ -440,7 +427,8 @@ class Me extends User {
     List<Product> recipes;
 
     int earlyTurn = 7;  //開始nターンを序盤と定義
-    int lastSpurtRemainProductCount = 2;    //残りn個で終了、を終盤と定義
+    int wantSpellSum = 18;  //n個のSpellを持つまでを序盤と定義
+    int lastSpurtRemainProductCount = 1;    //残りn個で終了、を終盤と定義
 
     public Me(int[] ingredients, int score) {
         super(ingredients, score);
@@ -461,18 +449,19 @@ class Me extends User {
     }
 
     public void setStrategyByCondition(User opponent) {
-        if (this.currentTurn < this.earlyTurn) {
+//        if (this.currentTurn < this.earlyTurn) {
+        if (this.spells.size() < this.wantSpellSum && this.strategy.compareTo(Strategy.Start) <= 0) {
             this.setStrategy(Strategy.Start);
         } else if ((this.productCount + 1 == productCountLimit)
-            || (opponent.productCount + 2 == productCountLimit //このターン1つ作ることでチェックがかかる場合
-                 && this.recipes.stream().anyMatch(recipe->recipe.isCreatable(opponent))
-                )
+                || (opponent.productCount + 2 == productCountLimit //このターン1つ作ることでチェックがかかる場合
+                && this.recipes.stream().anyMatch(recipe -> recipe.isCreatable(opponent))
+        )
         ) {
             this.setStrategy(Strategy.Last);
         } else if (
                 ((this.productCount + this.lastSpurtRemainProductCount >= productCountLimit)
                         || (opponent.productCount + this.lastSpurtRemainProductCount >= productCountLimit))
-        && (this.productCount > 2)) {
+                        && (this.productCount > 2)) {
             this.setStrategy(Strategy.LastSpurt);
         } else if (Strategy.CollectIngredient.compareTo(this.strategy) < 0) {
             this.setStrategy(Strategy.CreateProduct);
@@ -492,8 +481,47 @@ class Me extends User {
     public Command getWhatWantToDo(User[] opponents) {
         switch (this.strategy) {
             case Start:
-                //始めは魔法の選択肢を広げる。効率は判定しない
-                return new LEARN(this.tome.get(0).actionId);
+                //始めは魔法の選択肢を広げる。
+                Spell targetSpell = this.getEfficientSpellFromTome();
+                if (targetSpell != null) {
+                    Logger.logln("targetted: " + targetSpell.actionId);
+                    return new LEARN(targetSpell.actionId);
+                }
+
+                if (this.isEfficientSpellInTome()) {
+                    Logger.logln("is efficient spell");
+                    //書庫に税がたまっていたらもらっておく
+                    if(this.tome.get(0).taxCount > 1) {
+                        return new LEARN(this.tome.get(0).actionId);
+                    }
+
+                    Spell wantToDoSpell = null;
+                    //0のingredientsを生成するSpellのうち、後半のものを実行したい
+                    for (Spell spell : this.spells) {
+                        if (spell.ingredients[0] > 0 && this.canDoSpell(spell, 1)) {
+                            wantToDoSpell = spell;
+                        }
+                    }
+                    if (wantToDoSpell != null) {
+                        return wantToDoSpell;
+                    } else {
+                        return new Rest();
+                    }
+                } else {
+                    this.strategy = Strategy.CollectIngredient; //ほしいSpellがないので次のフレームからは次のステップへ進む
+                    Spell wantToDoSpell = null;
+                    //実行可能なSpellのうち、後半のものを実行したい
+                    for (Spell spell : this.spells) {
+                        if (this.canDoSpell(spell, 1)) {
+                            wantToDoSpell = spell;
+                        }
+                    }
+                    if (wantToDoSpell != null) {
+                        return wantToDoSpell;
+                    }
+
+                    return new Rest();
+                }
             case CollectIngredient:
                 if (this.targetProduct != null && this.targetProduct.isCreatable(this)) {
                     Logger.logln("goto creation");
@@ -521,8 +549,8 @@ class Me extends User {
                     product.setPriority(this.strategy, this, opponents[0]);
                 }
                 Collections.sort(this.recipes);
-                for (Product p:this.recipes) {
-                    if(this.creationMap.getStep(CreationMap.toKey(p.ingredients)) < Integer.MAX_VALUE) {
+                for (Product p : this.recipes) {
+                    if (this.creationMap.getStep(CreationMap.toKey(p.ingredients)) < Integer.MAX_VALUE) {
                         this.setTargetProduct(p);
                         break;
                     }
@@ -536,7 +564,7 @@ class Me extends User {
             //どうしようもなくなったら休憩またはスペル追加
             Logger.logln("Can Nothing");
 //            if (this.restable()) {
-                return new Rest();
+            return new Rest();
 //            } else {
 //                return new LEARN(tome.get(0).actionId);
 //            }
@@ -549,16 +577,12 @@ class Me extends User {
         Logger.logln("target" + this.targetProduct.actionId);
 
         if (tp.isCreatable(this)) {
-            Logger.logln(Arrays.toString(tp.ingredients));
-            Logger.logln(Arrays.toString(this.ingredients));
-            Logger.logln(this.targetProduct.actionId);
             return new Brew(this.targetProduct.actionId);
         }
 
         String key = CreationMap.toKey(tp.ingredients);
         Logger.logln(key);
         if (this.creationMap.map.get(key) == null) {
-//            Logger.logln(this.creationMap.map.toString());
             throw new NothingCanDoException();
         }
 
@@ -587,9 +611,9 @@ class Me extends User {
         int dynamicStep;
 
         for (int l = 10; 0 <= l; l--) {
-            for (int k = 10-l; 0 <= k; k--) {
-                for (int j = 10-l-k; 0 <= j; j--) {
-                    for (int i = 10-l-k-j; 0 <= i; i--) {
+            for (int k = 10 - l; 0 <= k; k--) {
+                for (int j = 10 - l - k; 0 <= j; j--) {
+                    for (int i = 10 - l - k - j; 0 <= i; i--) {
                         key = CreationMap.toKey(new int[]{i, j, k, l});
                         staticStep = this.staticCreationMap.getStep(key);
                         dynamicStep = this.creationMap.getStep(key);
@@ -597,15 +621,89 @@ class Me extends User {
                         if ((staticStep - dynamicStep) >= maxPerformance && staticStep < 1000000) {
                             maxPerformance = staticStep - dynamicStep;
                             maxConditions = new int[]{-i, -j, -k, -l};
-                            Logger.logln(staticStep);
-                            Logger.logln(dynamicStep);
-                            Logger.logln(Arrays.toString(maxConditions));
+//                            Logger.logln(staticStep);
+//                            Logger.logln(dynamicStep);
+//                            Logger.logln(Arrays.toString(maxConditions));
                         }
                     }
                 }
             }
         }
         return new Product(0, "BREW", maxConditions, 0, 0, 0, false, false);
+    }
+
+    //書庫に欲しいSpellがあるか
+    private boolean isEfficientSpellInTome() {
+        boolean[] wantToGainId = new boolean[4];
+        Arrays.fill(wantToGainId, false);
+
+        //足りないSpellの確認
+        for (int spellIndex = 4; spellIndex < this.spells.size(); spellIndex++) {
+            Spell spell = this.spells.get(spellIndex);
+            Arrays.stream(spell.ingredients).filter(count -> count > 0).forEach(i -> wantToGainId[i] = true);
+        }
+        if (Arrays.equals(wantToGainId, new boolean[]{false, false, false, false})) {
+            return false;
+        }
+
+        //足りないSpellが1つでもtomeにあるか
+        return this.tome.stream().anyMatch(spell -> {
+            for (int i = 0; i < wantToGainId.length; i++) {
+                if (wantToGainId[i] && spell.ingredients[i] > 0) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    private Spell getEfficientSpellFromTome() {
+        for (int taxOrb = 0; taxOrb < this.ingredients[0]; taxOrb++) {
+            Spell targetSpell = this.tome.get(taxOrb);
+            Logger.logln((targetSpell.actionId));
+            Logger.logln(Arrays.toString(targetSpell.ingredients));
+            //アイテム消費のない魔法は無条件で取得
+            if (Arrays.stream(targetSpell.ingredients).allMatch(ingredient -> 0 < ingredient)) {
+                return targetSpell;
+            }
+
+            //消費アイテムと取得アイテムが被っている魔法は取得しない
+            if (this.wantSpell(targetSpell)) {
+                return targetSpell;
+            }
+        }
+        return null;
+    }
+
+    //Userに必要なSpellであるか
+    private boolean wantSpell(Spell targetSpell) {
+        for (int spellIndex = 4; spellIndex < this.spells.size(); spellIndex++) {
+            Spell spell = this.spells.get(spellIndex);
+            if (!this.isNewLostNewGain(targetSpell, spell)) {
+                return false;    //同様のSpellを１つでも所有していたら無効
+            }
+        }
+        return true;
+    }
+
+    //消費アイテムと取得アイテムがどちらも被っていたらNG
+    private boolean isNewLostNewGain(Spell tomeSpell, Spell mySpell) {
+        boolean duplicatedLost = false;
+        boolean duplicatedGain = false;
+        Logger.logln(Arrays.toString(tomeSpell.ingredients));
+        Logger.logln(Arrays.toString(mySpell.ingredients));
+        for (int i = 0; i < mySpell.ingredients.length; i++) {
+            if (tomeSpell.ingredients[i] < 0 && mySpell.ingredients[i] < 0
+            || Arrays.stream(mySpell.ingredients).allMatch(ingredient -> ingredient>0)) {   //比較対象が消費無しSpellであれば、消費アイテム同じ判定
+                Logger.logln("duplicatedLost:" + i);
+                duplicatedLost = true;
+            }
+            if (0 < tomeSpell.ingredients[i] && 0 < mySpell.ingredients[i]) {
+                Logger.logln("duplicatedGain:" + i);
+                duplicatedGain = true;
+            }
+        }
+        return !(duplicatedLost && duplicatedGain);
     }
 }
 
@@ -632,7 +730,7 @@ class SimulationUser extends User {
     public Command getWhatDoFirst() {
         SimulationUser user = this;
         while (user.before != null && user.before.whatDo != null) {
-            Logger.logln(user.before.whatDo);
+//            Logger.logln(user.before.whatDo);
             user = user.before;
         }
 
@@ -651,7 +749,7 @@ class User {
     int[] ingredients;
     int ingredientSum;
     ArrayList<Spell> spells;
-    List<Spell> tome;
+    List<TomeSpell> tome;
 
     public User(int[] ingredients, int score) {
         this.ingredients = new int[4];
@@ -671,7 +769,7 @@ class User {
         this.spells = spells;
     }
 
-    public void setTome(List<Spell> spells) {
+    public void setTome(List<TomeSpell> spells) {
         this.tome = spells;
     }
 
@@ -722,6 +820,16 @@ class User {
     //休憩に意味があるか
     public boolean restable() {
         return this.spells.stream().anyMatch(spell -> !spell.castable);
+    }
+}
+
+class TomeSpell extends Spell {
+    int tomeIndex;
+    int taxCount;
+    TomeSpell(int actionId,int[] ingredients,int tomeIndex,int taxCount,boolean castable,boolean repeatable){
+        super(actionId,ingredients,castable,repeatable);
+        this.tomeIndex = tomeIndex;
+        this.taxCount = taxCount;
     }
 }
 
@@ -800,7 +908,7 @@ class Logger {
     }
 
     public static void logln(Object s) {
-        System.err.println(Thread.currentThread().getStackTrace()[2].getLineNumber() + ":" + s + "::");
+//        System.err.println(Thread.currentThread().getStackTrace()[2].getLineNumber() + ":" + s + "::");
     }
 
 //    public static void logln(Command s) {
@@ -826,11 +934,11 @@ class ListFactory {
 class TimeKeeper {
     static long startTime;
 
-    static void initTimeKeeper (){
+    static void initTimeKeeper() {
         startTime = System.currentTimeMillis();
     }
 
-    static boolean isTimeOver () {
+    static boolean isTimeOver() {
         return System.currentTimeMillis() - startTime > 40;
     }
 }
