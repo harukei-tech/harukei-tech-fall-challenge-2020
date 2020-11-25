@@ -1,7 +1,6 @@
 import java.util.*;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Auto-generated code below aims at helping you parse
@@ -159,7 +158,7 @@ class Player {
 class CreationMap {
     Map<String, SimulationUser> map;
     Queue<SimulationUser> queue;
-    int maxLookahead = 8;
+    int maxLookahead = 10;
     boolean[][][][] isFilled;
     boolean[][][][] isRested;
     long startTime;
@@ -351,14 +350,14 @@ class Product implements Comparable<Product> {
     public Product(int actionId, String actionType, int[] ingredients, int price, int tomeIndex, int taxCount, boolean castable, boolean repeatable) {
         this.actionId = actionId;
         this.actionType = actionType;
-        this.ingredients = ingredients.clone();
+        this.ingredients = Arrays.stream(ingredients).map(v->-v).toArray();
         this.price = price;
     }
 
     public void setPriority(Strategy strategy, Me me, User opponent) {
         //終盤は挙動を変える
         if (strategy == Strategy.LastSpurt) {
-            this.priority = this.step; //すぐ作れるものを最優先
+            this.priority = this.initialStaticStep; //コストの低いものを最優先
             return;
         } else if (strategy == Strategy.Last) {
             //作っても負けるものは作らない
@@ -367,6 +366,8 @@ class Product implements Comparable<Product> {
             } else {
                 this.priority = this.step; //すぐ作れるものを最優先
             }
+            Logger.logln(this.actionId);
+            Logger.logln(this.priority);
             return;
         }
 
@@ -462,11 +463,16 @@ class Me extends User {
     public void setStrategyByCondition(User opponent) {
         if (this.currentTurn < this.earlyTurn) {
             this.setStrategy(Strategy.Start);
-        } else if (this.productCount + 1 == productCountLimit) {
+        } else if ((this.productCount + 1 == productCountLimit)
+            || (opponent.productCount + 2 == productCountLimit //このターン1つ作ることでチェックがかかる場合
+                 && this.recipes.stream().anyMatch(recipe->recipe.isCreatable(opponent))
+                )
+        ) {
             this.setStrategy(Strategy.Last);
         } else if (
-                (this.productCount + this.lastSpurtRemainProductCount >= productCountLimit)
-                        || (opponent.productCount + this.lastSpurtRemainProductCount >= productCountLimit)) {
+                ((this.productCount + this.lastSpurtRemainProductCount >= productCountLimit)
+                        || (opponent.productCount + this.lastSpurtRemainProductCount >= productCountLimit))
+        && (this.productCount > 2)) {
             this.setStrategy(Strategy.LastSpurt);
         } else if (Strategy.CollectIngredient.compareTo(this.strategy) < 0) {
             this.setStrategy(Strategy.CreateProduct);
@@ -492,16 +498,19 @@ class Me extends User {
                 if (this.targetProduct != null && this.targetProduct.isCreatable(this)) {
                     Logger.logln("goto creation");
                     this.setStrategy(Strategy.CreateProduct);
+                    this.targetProduct = null;
                     return this.getWhatWantToDo(opponents);
                 } else if (this.targetProduct == null) {
                     Logger.logln("start collecting");
                     this.setTargetProduct(this.getMostEfficientStatement());
+                    return this.getWhatWantToDo(opponents);
                 } else {
                     Logger.logln("continue creation");
                 }
                 break;
             case CreateProduct:
                 Logger.logln("creating Product");
+                Logger.logln(this.recipes.toString());
             case LastSpurt:
                 Logger.logln("last spurt");
             case Last:
@@ -512,7 +521,12 @@ class Me extends User {
                     product.setPriority(this.strategy, this, opponents[0]);
                 }
                 Collections.sort(this.recipes);
-                this.setTargetProduct(this.recipes.get(0));
+                for (Product p:this.recipes) {
+                    if(this.creationMap.getStep(CreationMap.toKey(p.ingredients)) < Integer.MAX_VALUE) {
+                        this.setTargetProduct(p);
+                        break;
+                    }
+                }
                 break;
         }
 
@@ -572,17 +586,17 @@ class Me extends User {
         int staticStep;
         int dynamicStep;
 
-        for (int i = 0; i <= 10; i++) {
-            for (int j = 0; j <= (10 - i); j++) {
-                for (int k = 0; k <= 10 - i - j; k++) {
-                    for (int l = 0; l <= 10 - i - j - k; l++) {
+        for (int l = 10; 0 <= l; l--) {
+            for (int k = 10-l; 0 <= k; k--) {
+                for (int j = 10-l-k; 0 <= j; j--) {
+                    for (int i = 10-l-k-j; 0 <= i; i--) {
                         key = CreationMap.toKey(new int[]{i, j, k, l});
                         staticStep = this.staticCreationMap.getStep(key);
                         dynamicStep = this.creationMap.getStep(key);
                         //staticStep上作れない扱いは排除
-                        if ((staticStep - dynamicStep) > maxPerformance && staticStep < 1000000) {
+                        if ((staticStep - dynamicStep) >= maxPerformance && staticStep < 1000000) {
                             maxPerformance = staticStep - dynamicStep;
-                            maxConditions = new int[]{-i, -j, -k, -l};  //Productは、いくつ消費するかのデータ
+                            maxConditions = new int[]{-i, -j, -k, -l};
                             Logger.logln(staticStep);
                             Logger.logln(dynamicStep);
                             Logger.logln(Arrays.toString(maxConditions));
@@ -635,15 +649,17 @@ class User {
     int previousScore;
     int extraScore = 0;
     int[] ingredients;
+    int ingredientSum;
     ArrayList<Spell> spells;
     List<Spell> tome;
 
     public User(int[] ingredients, int score) {
         this.ingredients = new int[4];
         this.ingredients = ingredients.clone();
+        this.ingredientSum = Arrays.stream(ingredients).sum();  //streamは重いようなのであらかじめ計算しておく
         this.score = score;
         this.productCount = 0;
-        this.extraScore = Arrays.stream(this.ingredients).sum() - this.ingredients[0];  //item0以外は得点として加算される
+        this.extraScore = Arrays.stream(ingredients).sum() - this.ingredients[0];  //item0以外は得点として加算される
     }
 
     public void update(int[] ingredients, int score) {
@@ -696,7 +712,7 @@ class User {
         }
 
         //所持上限違反
-        return !this.willBagOverflow(Arrays.stream(spell.ingredients).sum() * times);
+        return !this.willBagOverflow(spell.ingredientSum * times);
     }
 
     public void rest() {
@@ -711,6 +727,7 @@ class User {
 
 class Spell extends Command implements Cloneable {
     int[] ingredients;
+    int ingredientSum;
     boolean castable;
     boolean repeatable;
 
@@ -719,6 +736,7 @@ class Spell extends Command implements Cloneable {
     Spell(int actionId, int[] ingredients, boolean castable, boolean repeatable) {
         this.actionId = actionId;
         this.ingredients = ingredients.clone();
+        this.ingredientSum = Arrays.stream(ingredients).sum();
         this.castable = castable;
         this.repeatable = repeatable;
         this.shouldRepeatNumber = 1;
